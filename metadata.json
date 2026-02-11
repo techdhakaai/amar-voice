@@ -1,0 +1,8 @@
+{
+  "name": "Amar Voice: BD E-commerce Assistant",
+  "description": "A high-performance voice-powered customer service platform for Bangladeshi e-commerce businesses, utilizing Gemini 2.5 Live API for real-time Bengali conversation.",
+  "requestFramePermissions": [
+    "microphone",
+    "camera"
+  ]
+}

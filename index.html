@@ -1,0 +1,119 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Amar Voice - BD Customer Service</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Hind+Siliguri:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Hind Siliguri', sans-serif;
+            background-color: #f8fafc;
+        }
+
+        @keyframes speaking-glow {
+            0% { box-shadow: 0 0 0 0 rgba(251, 146, 60, 0.4); transform: scale(1.05); }
+            50% { box-shadow: 0 0 20px 10px rgba(251, 146, 60, 0.2); transform: scale(1.08); }
+            100% { box-shadow: 0 0 0 0 rgba(251, 146, 60, 0.4); transform: scale(1.05); }
+        }
+
+        @keyframes processing-ring {
+            0% { transform: scale(1); opacity: 0.8; }
+            50% { transform: scale(1.2); opacity: 0; }
+            100% { transform: scale(1); opacity: 0; }
+        }
+
+        @keyframes pulse-shimmer {
+            0% { background-position: -200% 0; }
+            100% { background-position: 200% 0; }
+        }
+
+        .shimmer-bg {
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.4), transparent);
+            background-size: 200% 100%;
+            animation: pulse-shimmer 2s infinite linear;
+        }
+
+        .processing-pulse {
+            position: absolute;
+            inset: -4px;
+            border: 2px solid #60a5fa;
+            border-radius: 9999px;
+            animation: processing-ring 2s infinite ease-out;
+        }
+
+        .speaking-active {
+            animation: speaking-glow 2s infinite ease-in-out;
+            border-color: #fb923c !important;
+        }
+
+        .wave-bar {
+            width: 4px;
+            background-color: #fb923c;
+            border-radius: 2px;
+            margin: 0 2px;
+            transition: height 0.2s ease;
+        }
+
+        @keyframes wave-animation {
+            0%, 100% { height: 8px; }
+            50% { height: 24px; }
+        }
+
+        .wave-active {
+            animation: wave-animation 1s infinite ease-in-out;
+        }
+
+        @keyframes word-reveal {
+            0% { opacity: 0; transform: translateY(8px) scale(0.95); }
+            100% { opacity: 1; transform: translateY(0) scale(1); }
+        }
+
+        .word-animate {
+            display: inline-block;
+            animation: word-reveal 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+        }
+
+        @keyframes shrink-progress {
+            0% { width: 100%; }
+            100% { width: 0%; }
+        }
+        .animate-shrink-progress {
+            animation: shrink-progress 4s linear forwards;
+        }
+
+        @keyframes dot-elastic {
+            0%, 100% { transform: translateY(0); opacity: 0.4; }
+            50% { transform: translateY(-6px); opacity: 1; }
+        }
+
+        .dot-elastic-animate {
+            animation: dot-elastic 1s infinite ease-in-out;
+        }
+
+        .scrollbar-hide::-webkit-scrollbar {
+            display: none;
+        }
+        .scrollbar-hide {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+    </style>
+<script type="importmap">
+{
+  "imports": {
+    "@google/genai": "https://esm.sh/@google/genai@^1.39.0",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.4/",
+    "react/": "https://esm.sh/react@^19.2.4/",
+    "react": "https://esm.sh/react@^19.2.4"
+  }
+}
+</script>
+</head>
+<body>
+    <div id="root"></div>
+</body>
+</html>
