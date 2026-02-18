@@ -1,309 +1,313 @@
 
-import React, { useState, useEffect } from 'react';
-import { AppView, AnalyticsData, BusinessConfig, SentimentPoint } from './types';
+import React, { useState, useEffect, useMemo } from 'react';
+import { AppView, BusinessConfig, Lead, MarketPrice } from './types';
 import VoiceInterface from './components/VoiceInterface';
+import { GoogleGenAI } from '@google/genai';
 
-const SENTIMENT_DATA: SentimentPoint[] = [
-  { day: 'Sat', positive: 70, negative: 30 },
-  { day: 'Sun', positive: 85, negative: 15 },
-  { day: 'Mon', positive: 65, negative: 35 },
-  { day: 'Tue', positive: 90, negative: 10 },
-  { day: 'Wed', positive: 88, negative: 12 },
-  { day: 'Thu', positive: 72, negative: 28 },
-  { day: 'Fri', positive: 95, negative: 5 }
-];
+// Firebase Imports
+import { initializeApp } from 'firebase/app';
+import { getFirestore, collection, addDoc, getDocs, query, orderBy, Timestamp } from 'firebase/firestore';
 
-const KEYWORDS = ["বিকাশ", "ডেলিভারি", "রিটার্ন", "অর্ডার", "দেরি", "ধন্যবাদ", "প্রাইস"];
+// --- Firebase Configuration (REPLACE WITH YOUR ACTUAL CONFIG) ---
+// You will get this from your Firebase project settings
+const firebaseConfig = {
+  apiKey: "YOUR_API_KEY",
+  authDomain: "YOUR_AUTH_DOMAIN",
+  projectId: "YOUR_PROJECT_ID",
+  storageBucket: "YOUR_STORAGE_BUCKET",
+  messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
+  appId: "YOUR_APP_ID"
+};
+
+// Initialize Firebase once
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+// ----------------------------------------------------------------
 
 const App: React.FC = () => {
   const [currentView, setCurrentView] = useState<AppView>(AppView.DASHBOARD);
   const [showVoiceInterface, setShowVoiceInterface] = useState(false);
-  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [leads, setLeads] = useState<Lead[]>([]); // Initialize as empty, fetched from Firestore
+  const [isLoadingLeads, setIsLoadingLeads] = useState(true); // New loading state for leads
+  const [marketPrices, setMarketPrices] = useState<MarketPrice[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
   
-  const [config, setConfig] = useState<BusinessConfig>({
-    shopName: 'Deshi Bazar',
-    deliveryInsideDhaka: 60,
-    deliveryOutsideDhaka: 120,
-    paymentMethods: ['bKash', 'Nagad', 'Cash on Delivery'],
-    returnPolicy: '7-day return if the product is defective.',
-    bkashNumber: '01700000000',
-    personaTone: 'friendly',
-    subscriptionStatus: 'trial',
-    monthlyLimit: 100,
-    usageCount: 24
+  const [config, setConfig] = useState<BusinessConfig>(() => {
+    const saved = localStorage.getItem('amar_config');
+    return saved ? JSON.parse(saved) : {
+      shopName: 'My Online Store',
+      deliveryInsideDhaka: 60,
+      deliveryOutsideDhaka: 120,
+      paymentMethods: ['bKash', 'Nagad', 'Cash on Delivery'],
+      returnPolicy: '7-day return policy.',
+      bkashNumber: '01XXXXXXXXX',
+      personaTone: 'friendly',
+      subscriptionStatus: 'trial',
+      monthlyLimit: 100,
+      usageCount: 0
+    };
   });
 
-  const [readiness, setReadiness] = useState({ micAccess: false, configSaved: true, voiceCloned: true });
-
   useEffect(() => {
-    navigator.mediaDevices.getUserMedia({ audio: true })
-      .then(() => setReadiness(prev => ({ ...prev, micAccess: true })))
-      .catch(() => setReadiness(prev => ({ ...prev, micAccess: false })));
-  }, []);
+    localStorage.setItem('amar_config', JSON.stringify(config));
+  }, [config]);
 
-  const handleConfigChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
-    const { name, value } = e.target;
-    setConfig(prev => ({ ...prev, [name]: value }));
+  // Fetch leads from Firestore on component mount
+  useEffect(() => {
+    const fetchLeads = async () => {
+      setIsLoadingLeads(true);
+      try {
+        const q = query(collection(db, "leads"), orderBy("timestamp", "desc"));
+        const querySnapshot = await getDocs(q);
+        const fetchedLeads: Lead[] = querySnapshot.docs.map(doc => {
+          const data = doc.data();
+          return {
+            id: doc.id,
+            name: data.name || 'N/A',
+            phone: data.phone,
+            location: data.location || 'N/A',
+            interest: data.interest || 'N/A',
+            timestamp: data.timestamp.toDate() // Convert Firebase Timestamp to Date
+          };
+        });
+        setLeads(fetchedLeads);
+      } catch (error) {
+        console.error("Error fetching leads from Firestore:", error);
+        // Optionally, fall back to local storage or display an error message
+        const saved = localStorage.getItem('amar_leads');
+        setLeads(saved ? JSON.parse(saved).map((l: any) => ({ ...l, timestamp: new Date(l.timestamp) })) : []);
+      } finally {
+        setIsLoadingLeads(false);
+      }
+    };
+
+    fetchLeads();
+  }, []); // Run once on mount
+
+  const handleLeadCaptured = async (newLead: Lead) => {
+    try {
+      // Add lead to Firestore
+      const docRef = await addDoc(collection(db, "leads"), {
+        name: newLead.name || 'N/A',
+        phone: newLead.phone,
+        location: newLead.location || 'N/A',
+        interest: newLead.interest || 'N/A',
+        timestamp: Timestamp.fromDate(newLead.timestamp) // Store as Firebase Timestamp
+      });
+      // Update local state with the Firestore-assigned ID
+      setLeads(prev => [{ ...newLead, id: docRef.id }, ...prev]);
+    } catch (error) {
+      console.error("Error saving lead to Firestore:", error);
+      // Fallback: If Firestore fails, still update local state
+      setLeads(prev => [{ ...newLead, id: Math.random().toString(36).substring(2, 9) }, ...prev]);
+    }
   };
 
+  const exportToWhatsApp = (lead: Lead) => {
+    const text = `*New Customer Lead from Amar Voice*%0A%0AName: ${lead.name || 'N/A'}%0APhone: ${lead.phone}%0AInterest: ${lead.interest || 'N/A'}%0ALocation: ${lead.location || 'N/A'}`;
+    window.open(`https://wa.me/?text=${text}`, '_blank');
+  };
+
+  const handlePriceSearch = async () => {
+    if (!searchQuery) return;
+    setIsSearching(true);
+    try {
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      const response = await ai.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: `Latest price of "${searchQuery}" in Bangladesh (Taka). Summarize from Daraz/Star Tech/Pickaboo.`,
+        config: { tools: [{ googleSearch: {} }] }
+      });
+      
+      const newPrice: MarketPrice = {
+        product: searchQuery,
+        source: 'AI Intelligence',
+        price: response.text || 'Price details unavailable.',
+        link: response.candidates?.[0]?.groundingMetadata?.groundingChunks?.[0]?.web?.uri || '#'
+      };
+      setMarketPrices(prev => [newPrice, ...prev]);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  const NavItem = ({ view, icon, label }: { view: AppView, icon: string, label: string }) => (
+    <button 
+      onClick={() => setCurrentView(view)} 
+      className={`flex flex-col md:flex-row items-center gap-1 md:gap-3 p-2 md:p-4 rounded-2xl transition-all flex-1 md:flex-none ${currentView === view ? 'text-indigo-600 md:bg-indigo-600 md:text-white' : 'text-slate-400 hover:bg-slate-100 md:hover:bg-white/5'}`}
+    >
+      <i className={`fa-solid ${icon} text-lg md:text-xs`}></i>
+      <span className="text-[10px] md:text-sm font-bold">{label}</span>
+    </button>
+  );
+
   return (
-    <div className="min-h-screen flex bg-slate-50 font-['Hind_Siliguri']">
-      <aside className={`fixed inset-y-0 left-0 z-50 w-64 bg-slate-900 text-white flex flex-col transform transition-transform duration-300 lg:relative lg:translate-x-0 ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
-        <div className="p-10">
-          <h1 className="text-2xl font-black italic flex items-center gap-3">
-            <span className="bg-indigo-500 w-8 h-8 rounded-lg flex items-center justify-center not-italic text-sm">AV</span> AMAR VOICE
-          </h1>
+    <div className="min-h-screen flex flex-col md:flex-row bg-slate-50 overflow-hidden">
+      {/* Desktop Sidebar */}
+      <aside className="hidden md:flex w-64 bg-slate-900 text-white flex-col p-6 gap-8">
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center font-black">A</div>
+          <h1 className="text-xl font-black italic">AMAR VOICE</h1>
         </div>
-        <nav className="flex-1 px-6 space-y-2">
-          {[
-            { view: AppView.DASHBOARD, icon: 'fa-grid-2', label: 'Overview' },
-            { view: AppView.VOICE_AGENT, icon: 'fa-microphone', label: 'Agent Control' },
-            { view: AppView.MARKET_INSIGHTS, icon: 'fa-chart-line', label: 'Market Insights' },
-            { view: AppView.SETUP, icon: 'fa-wand-magic-sparkles', label: 'How To Setup' },
-            { view: AppView.SETTINGS, icon: 'fa-sliders', label: 'Knowledge Base' },
-            { view: AppView.SUBSCRIPTION, icon: 'fa-credit-card', label: 'Billing' }
-          ].map(item => (
-            <button key={item.view} onClick={() => { setCurrentView(item.view); setIsSidebarOpen(false); }} className={`w-full text-left px-5 py-3.5 rounded-2xl flex items-center gap-4 transition-all ${currentView === item.view ? 'bg-white/10 text-white border border-white/10' : 'text-slate-400 hover:text-white hover:bg-white/5'}`}>
-              <i className={`fa-solid ${item.icon} text-xs`}></i> <span className="font-bold text-sm">{item.label}</span>
-            </button>
-          ))}
+        <nav className="flex flex-col gap-2">
+          <NavItem view={AppView.DASHBOARD} icon="fa-house" label="Home" />
+          <NavItem view={AppView.LEADS} icon="fa-address-book" label="Leads" />
+          <NavItem view={AppView.PRICE_TRACKER} icon="fa-tag" label="Prices" />
+          <NavItem view={AppView.SETTINGS} icon="fa-sliders" label="Setup" />
         </nav>
       </aside>
 
-      <main className="flex-1 flex flex-col h-screen overflow-hidden">
-        <header className="h-20 bg-white border-b border-slate-200 flex items-center justify-between px-10 shrink-0">
-          <h2 className="text-sm font-black text-slate-400 uppercase tracking-widest">{currentView.replace(/_/g, ' ')}</h2>
-          <button onClick={() => setShowVoiceInterface(true)} className="px-6 py-2.5 bg-indigo-600 text-white rounded-xl font-bold text-sm shadow-xl shadow-indigo-600/20 active:scale-95 transition-all">Live Test Agent</button>
+      <main className="flex-1 flex flex-col h-screen overflow-hidden relative">
+        <header className="h-16 md:h-20 bg-white border-b border-slate-200 flex items-center justify-between px-6 md:px-10 shrink-0">
+          <div className="flex items-center gap-2">
+            <h1 className="md:hidden text-lg font-black text-indigo-600 italic">AMAR VOICE</h1>
+            <h2 className="hidden md:block text-sm font-black text-slate-400 uppercase tracking-widest">{currentView}</h2>
+          </div>
+          <button 
+            onClick={() => setShowVoiceInterface(true)} 
+            className="h-10 px-4 md:px-6 bg-indigo-600 text-white rounded-full md:rounded-xl font-bold text-xs shadow-lg active:scale-95 transition-all flex items-center gap-2"
+          >
+            <i className="fa-solid fa-microphone"></i>
+            <span className="hidden xs:inline">Talk to AI</span>
+          </button>
         </header>
 
-        <div className="flex-1 overflow-y-auto p-10 scrollbar-hide">
+        <div className="flex-1 overflow-y-auto p-4 md:p-10 hide-scrollbar pb-24 md:pb-10">
           {currentView === AppView.DASHBOARD && (
-            <div className="space-y-10 animate-in fade-in duration-700">
-               <div className="bg-slate-900 rounded-[40px] p-12 text-white flex justify-between items-center relative overflow-hidden group">
-                  <div className="relative z-10">
-                    <h1 className="text-4xl font-black mb-4">Hello, {config.shopName}!</h1>
-                    <p className="text-slate-400 font-medium max-w-lg leading-relaxed">Your AI Agent managed 24 calls today with a 98% satisfaction rate.</p>
-                  </div>
-                  <div className="hidden lg:flex w-24 h-24 bg-white/5 rounded-full items-center justify-center border border-white/10 hover:scale-110 transition-transform">
-                     <i className="fa-solid fa-bolt-lightning text-3xl text-indigo-400"></i>
-                  </div>
-               </div>
-
-               <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
-                  <div className="bg-white p-10 rounded-[40px] border border-slate-100 shadow-sm">
-                    <h3 className="text-xl font-black mb-6">Integration Health</h3>
-                    <div className="space-y-4">
-                       <div className="flex items-center justify-between p-5 bg-green-50 rounded-3xl border border-green-100">
-                          <span className="text-sm font-black text-green-700">LIVE SERVER ACTIVE</span>
-                          <span className="text-[10px] font-bold text-green-600">9ms Latency</span>
-                       </div>
-                       <div className="bg-slate-950 p-6 rounded-3xl font-mono text-[10px] text-indigo-300 relative group overflow-hidden">
-                          <code>{`<script src="https://api.amarvoice.com/v2/bot.js?id=deshibazar"></script>`}</code>
-                       </div>
-                    </div>
-                  </div>
-                  <div className="bg-white p-10 rounded-[40px] border border-slate-100 shadow-sm relative group cursor-pointer" onClick={() => setCurrentView(AppView.MARKET_INSIGHTS)}>
-                     <h3 className="text-xl font-black mb-2">Sentiment Alert</h3>
-                     <p className="text-slate-500 text-sm mb-6">"Customers are asking for faster delivery in Chittagong."</p>
-                     <div className="flex items-end gap-2 h-24">
-                        {SENTIMENT_DATA.slice(-5).map(d => (
-                          <div key={d.day} className="flex-1 bg-indigo-500 rounded-t-lg transition-all hover:bg-orange-500" style={{ height: `${d.positive}%` }}></div>
-                        ))}
-                     </div>
-                  </div>
-               </div>
+            <div className="space-y-6">
+              <div className="bg-indigo-600 rounded-[32px] md:rounded-[40px] p-6 md:p-10 text-white shadow-xl">
+                <h1 className="text-2xl md:text-3xl font-black mb-2">Shubho Shokal!</h1>
+                <p className="opacity-80 text-sm">Managing <b>{config.shopName}</b>. {leads.length} leads waiting for you.</p>
+              </div>
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm">
+                   <p className="text-[10px] font-black text-slate-400 uppercase">Total Leads</p>
+                   <p className="text-2xl font-black text-slate-800">{leads.length}</p>
+                </div>
+                <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm">
+                   <p className="text-[10px] font-black text-slate-400 uppercase">Usage</p>
+                   <p className="text-2xl font-black text-slate-800">{config.usageCount}%</p>
+                </div>
+              </div>
             </div>
           )}
 
-          {currentView === AppView.MARKET_INSIGHTS && (
-            <div className="space-y-10 animate-in fade-in duration-500">
-               <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                  <div className="lg:col-span-2 bg-white p-10 rounded-[40px] border border-slate-100 shadow-sm">
-                    <h3 className="text-xl font-black mb-8">Voice Sentiment Analysis</h3>
-                    <div className="h-64 flex items-end gap-4 border-b border-slate-100 pb-2">
-                       {SENTIMENT_DATA.map(d => (
-                         <div key={d.day} className="flex-1 flex flex-col justify-end group relative">
-                            <div className="absolute -top-10 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-2 py-1 rounded text-[10px] opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">{d.positive}% Positive</div>
-                            <div className="w-full bg-slate-100 rounded-t-xl overflow-hidden flex flex-col-reverse" style={{ height: '100%' }}>
-                               <div className="w-full bg-red-400" style={{ height: `${d.negative}%` }}></div>
-                               <div className="w-full bg-indigo-500" style={{ height: `${d.positive}%` }}></div>
-                            </div>
-                            <p className="text-[10px] font-black text-slate-400 text-center mt-3 uppercase tracking-widest">{d.day}</p>
-                         </div>
-                       ))}
-                    </div>
-                    <div className="mt-8 flex gap-6">
-                       <div className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-indigo-500"></div> <span className="text-xs font-bold text-slate-500">Positive Experience</span></div>
-                       <div className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-red-400"></div> <span className="text-xs font-bold text-slate-500">Negative Experience</span></div>
-                    </div>
-                  </div>
-                  
-                  <div className="bg-white p-10 rounded-[40px] border border-slate-100 shadow-sm flex flex-col">
-                    <h3 className="text-xl font-black mb-8">Popular Keywords</h3>
-                    <div className="flex flex-wrap gap-2">
-                       {KEYWORDS.map((k, i) => (
-                         <span key={k} className={`px-4 py-2 rounded-2xl font-black transition-all hover:scale-110 cursor-default ${i === 0 ? 'bg-orange-100 text-orange-600 text-lg' : i === 1 ? 'bg-indigo-100 text-indigo-600 text-md' : 'bg-slate-100 text-slate-600 text-xs'}`}>{k}</span>
-                       ))}
-                    </div>
-                    <div className="mt-auto pt-10">
-                       <p className="text-[10px] font-black uppercase text-slate-400 tracking-widest mb-2">Trend Analysis</p>
-                       <p className="text-sm font-bold text-slate-700 leading-relaxed">Payment inquiries increased by <span className="text-green-600">+12%</span> this week. Recommend adding "Nagad" support.</p>
-                    </div>
-                  </div>
-               </div>
-            </div>
-          )}
-
-          {currentView === AppView.SETUP && (
-            <div className="space-y-12 animate-in fade-in slide-in-from-bottom-4 duration-700">
-               <div className="text-center max-w-2xl mx-auto">
-                  <h1 className="text-4xl font-black mb-4">Launch Your Voice Bot in 5 Minutes</h1>
-                  <p className="text-slate-500 font-bold">Follow this simple guide to integrate Amar Voice AI with your online store and social channels.</p>
-               </div>
-
-               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-                  {[
-                    { step: 1, title: 'Knowledge Base', icon: 'fa-book-open', desc: 'Fill your store info in Settings.' },
-                    { step: 2, title: 'Voice Calibration', icon: 'fa-sliders', desc: 'Select accent & test the bot live.' },
-                    { step: 3, title: 'Embed Code', icon: 'fa-code', desc: 'Copy snippet to your website.' },
-                    { step: 4, title: 'Connect FB', icon: 'fa-facebook-messenger', desc: 'Link Messenger for auto-replies.' }
-                  ].map(s => (
-                    <div key={s.step} className="bg-white p-8 rounded-[32px] border border-slate-100 shadow-sm flex flex-col items-center text-center group hover:border-indigo-500 transition-all">
-                       <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center mb-6 font-black text-lg group-hover:bg-indigo-600 group-hover:text-white transition-colors">{s.step}</div>
-                       <i className={`fa-solid ${s.icon} text-2xl text-slate-300 mb-4 group-hover:text-indigo-500`}></i>
-                       <h4 className="font-black text-slate-800 mb-2">{s.title}</h4>
-                       <p className="text-xs font-bold text-slate-500 leading-relaxed">{s.desc}</p>
+          {currentView === AppView.LEADS && (
+            <div className="space-y-6">
+              <h3 className="text-xl font-black flex items-center gap-2">
+                <i className="fa-solid fa-bolt text-amber-500"></i> New Customer Requests
+              </h3>
+              {isLoadingLeads ? (
+                <div className="flex items-center justify-center p-10 text-slate-500">
+                  <i className="fa-solid fa-spinner fa-spin mr-3"></i> Loading leads...
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {leads.map(lead => (
+                    <div key={lead.id} className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm hover:ring-2 hover:ring-indigo-100 transition-all flex justify-between items-start">
+                      <div className="space-y-1">
+                        <h4 className="font-black text-slate-800">{lead.name || 'Anonymous User'}</h4>
+                        <p className="text-indigo-600 font-bold text-sm">{lead.phone}</p>
+                        <p className="text-xs text-slate-500 line-clamp-1 italic">Int: {lead.interest}</p>
+                        <p className="text-xs text-slate-400">Loc: {lead.location}</p>
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        <button 
+                          onClick={() => exportToWhatsApp(lead)}
+                          className="w-10 h-10 bg-green-50 text-green-600 rounded-full flex items-center justify-center hover:bg-green-100 transition-colors"
+                          aria-label={`Share lead ${lead.name || lead.phone} to WhatsApp`}
+                        >
+                          <i className="fa-brands fa-whatsapp"></i>
+                        </button>
+                        <a 
+                          href={`tel:${lead.phone}`}
+                          className="w-10 h-10 bg-blue-50 text-blue-600 rounded-full flex items-center justify-center hover:bg-blue-100 transition-colors"
+                          aria-label={`Call lead ${lead.name || lead.phone}`}
+                        >
+                          <i className="fa-solid fa-phone"></i>
+                        </a>
+                      </div>
                     </div>
                   ))}
-               </div>
+                  {leads.length === 0 && (
+                    <div className="col-span-full p-6 text-center text-slate-500 italic">
+                      No leads captured yet. Start a conversation with the AI!
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
-               <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
-                  <div className="bg-white p-10 rounded-[40px] border border-slate-100 shadow-sm">
-                     <h3 className="text-xl font-black mb-8 flex items-center gap-3"><i className="fa-solid fa-laptop-code text-indigo-500"></i> Website Integration</h3>
-                     <p className="text-sm font-bold text-slate-600 mb-6">Works with <span className="text-indigo-600">Shopify</span>, <span className="text-indigo-600">WooCommerce</span>, and custom sites.</p>
-                     
-                     <div className="space-y-6">
-                        <div className="bg-slate-900 rounded-3xl p-6 relative overflow-hidden group">
-                           <div className="flex items-center justify-between mb-4 border-b border-white/10 pb-4">
-                              <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Global Header Script</span>
-                              <button className="text-[10px] font-black text-white bg-indigo-600 px-3 py-1 rounded-lg hover:bg-indigo-700 transition-all active:scale-95">Copy Script</button>
-                           </div>
-                           <pre className="text-xs text-indigo-200 font-mono leading-relaxed">
-{`<!-- Amar Voice Widget -->
-<script>
-  window.AmarVoiceConfig = {
-    appId: "deshibazar_772",
-    theme: "indigo_modern"
-  };
-</script>
-<script src="https://cdn.amarvoice.com/v1/bot.js" async></script>`}
-                           </pre>
-                        </div>
-                        <div className="bg-indigo-50 p-6 rounded-3xl border border-indigo-100">
-                           <h5 className="text-xs font-black text-indigo-700 uppercase mb-2 flex items-center gap-2">
-                              <i className="fa-solid fa-circle-info"></i> Pro Tip
-                           </h5>
-                           <p className="text-xs font-bold text-indigo-600 leading-relaxed">Paste this code right before the closing <code>&lt;/head&gt;</code> tag of your website theme.</p>
-                        </div>
-                     </div>
+          {currentView === AppView.PRICE_TRACKER && (
+            <div className="max-w-2xl mx-auto space-y-6">
+              <div className="bg-white p-6 md:p-10 rounded-[32px] border border-slate-100 shadow-sm">
+                 <h3 className="text-lg font-black mb-4">Competitor Price Search</h3>
+                 <div className="flex flex-col gap-3">
+                   <input 
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="e.g. Samsung A54 Price" 
+                    className="w-full px-5 py-3.5 bg-slate-50 border border-slate-200 rounded-2xl font-bold outline-none focus:ring-2 focus:ring-indigo-200"
+                   />
+                   <button 
+                    onClick={handlePriceSearch}
+                    disabled={isSearching}
+                    className="w-full py-3.5 bg-slate-900 text-white rounded-2xl font-black text-sm active:scale-95 transition-all shadow-lg"
+                   >
+                     {isSearching ? <i className="fa-solid fa-spinner fa-spin mr-2"></i> : <i className="fa-solid fa-magnifying-glass mr-2"></i>}
+                     {isSearching ? 'Searching...' : 'Check Market Prices'}
+                   </button>
+                 </div>
+              </div>
+              <div className="space-y-3">
+                {marketPrices.map((p, i) => (
+                  <div key={i} className="bg-white p-5 rounded-2xl border border-slate-100 animate-in slide-in-from-bottom-2 duration-300">
+                    <p className="text-[10px] font-black text-indigo-500 uppercase">{p.product}</p>
+                    <p className="text-sm font-bold text-slate-700 mt-2 whitespace-pre-wrap">{p.price}</p>
+                    <a href={p.link} target="_blank" className="text-[10px] font-black text-slate-400 mt-2 inline-block hover:text-indigo-600">SOURCE: DARAZ/STAR TECH <i className="fa-solid fa-arrow-up-right-from-square ml-1"></i></a>
                   </div>
-
-                  <div className="bg-white p-10 rounded-[40px] border border-slate-100 shadow-sm overflow-hidden flex flex-col">
-                     <h3 className="text-xl font-black mb-8 flex items-center gap-3"><i className="fa-solid fa-mobile-screen text-orange-500"></i> Visual Mockup</h3>
-                     <div className="flex-1 bg-slate-50 rounded-3xl border-2 border-dashed border-slate-200 relative flex items-center justify-center p-6">
-                        <div className="w-full max-w-[200px] aspect-[9/18] bg-white rounded-[32px] border-[6px] border-slate-800 shadow-2xl relative overflow-hidden flex flex-col">
-                           <div className="h-6 w-full bg-slate-800 flex items-center justify-center">
-                              <div className="h-2 w-10 bg-slate-700 rounded-full"></div>
-                           </div>
-                           <div className="flex-1 p-3 bg-slate-50">
-                              <div className="h-4 w-2/3 bg-slate-200 rounded-md mb-2"></div>
-                              <div className="h-24 w-full bg-slate-100 rounded-xl mb-3"></div>
-                              <div className="h-4 w-full bg-slate-200 rounded-md mb-2"></div>
-                              <div className="h-4 w-5/6 bg-slate-200 rounded-md"></div>
-                           </div>
-                           {/* The Widget Mockup */}
-                           <div className="absolute bottom-4 right-4 animate-bounce">
-                              <div className="w-10 h-10 bg-indigo-600 rounded-2xl shadow-xl flex items-center justify-center text-white text-xs border-2 border-white ring-4 ring-indigo-500/20">
-                                 <i className="fa-solid fa-microphone"></i>
-                              </div>
-                           </div>
-                        </div>
-                        <div className="absolute -right-4 -bottom-4 bg-orange-500 text-white px-5 py-3 rounded-2xl shadow-xl transform rotate-3 animate-pulse">
-                           <p className="text-[10px] font-black uppercase">Live Result</p>
-                        </div>
-                     </div>
-                     <p className="mt-8 text-[11px] font-bold text-slate-400 text-center leading-relaxed">This is how your customers will see the floating voice agent on your mobile store.</p>
-                  </div>
-               </div>
-
-               <div className="bg-indigo-600 rounded-[40px] p-12 text-white flex flex-col lg:flex-row items-center justify-between gap-10">
-                  <div className="max-w-xl text-center lg:text-left">
-                     <h2 className="text-3xl font-black mb-4">Need personalized setup?</h2>
-                     <p className="text-indigo-100 font-bold leading-relaxed">Our Bangladeshi support team can help you integrate the bot via WhatsApp or screen share.</p>
-                  </div>
-                  <div className="flex items-center gap-4">
-                     <button className="px-8 py-4 bg-white text-indigo-600 rounded-2xl font-black text-xs uppercase tracking-widest shadow-xl shadow-black/20 hover:scale-105 active:scale-95 transition-all">Book Free Session</button>
-                     <button className="px-8 py-4 bg-indigo-500 text-white border border-white/20 rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-indigo-400 transition-all">Watch Video Tutorial</button>
-                  </div>
-               </div>
+                ))}
+              </div>
             </div>
           )}
 
           {currentView === AppView.SETTINGS && (
-            <div className="max-w-4xl mx-auto bg-white p-10 rounded-[40px] border border-slate-100 shadow-sm">
-               <h3 className="text-xl font-black mb-10 flex items-center gap-3"><i className="fa-solid fa-brain text-indigo-500"></i> Knowledge Base</h3>
-               <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                  <div className="space-y-6">
-                     <div>
-                       <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 block">Shop Name</label>
-                       <input name="shopName" value={config.shopName} onChange={handleConfigChange} className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold outline-none focus:border-indigo-500 transition-all" />
-                     </div>
-                     <div>
-                       <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 block">Refund Policy</label>
-                       <textarea name="returnPolicy" value={config.returnPolicy} onChange={handleConfigChange} rows={4} className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold outline-none focus:border-indigo-500 transition-all resize-none" />
-                     </div>
-                  </div>
-                  <div className="space-y-6">
-                    <div className="grid grid-cols-2 gap-4">
-                       <div>
-                         <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 block">Inside Dhaka (৳)</label>
-                         <input name="deliveryInsideDhaka" type="number" value={config.deliveryInsideDhaka} onChange={handleConfigChange} className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold" />
-                       </div>
-                       <div>
-                         <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 block">Outside Dhaka (৳)</label>
-                         <input name="deliveryOutsideDhaka" type="number" value={config.deliveryOutsideDhaka} onChange={handleConfigChange} className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold" />
-                       </div>
-                    </div>
-                    <div>
-                       <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 block">bKash Merchant</label>
-                       <input name="bkashNumber" value={config.bkashNumber} onChange={handleConfigChange} className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold" />
-                    </div>
-                  </div>
-               </div>
-               <div className="mt-12 flex justify-end">
-                  <button className="px-10 py-4 bg-indigo-600 text-white rounded-2xl font-black text-xs uppercase tracking-widest shadow-xl shadow-indigo-600/20 hover:scale-105 active:scale-95 transition-all">Synchronize Knowledge</button>
+            <div className="max-w-xl mx-auto bg-white p-6 md:p-10 rounded-[32px] border border-slate-100 shadow-sm">
+               <h3 className="text-lg font-black mb-6">Store Setup</h3>
+               <div className="space-y-4">
+                 <div className="space-y-2">
+                   <label className="text-[10px] font-black text-slate-400 uppercase">Shop Name</label>
+                   <input value={config.shopName} onChange={e => setConfig({...config, shopName: e.target.value})} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl font-bold" />
+                 </div>
+                 <div className="space-y-2">
+                   <label className="text-[10px] font-black text-slate-400 uppercase">bKash Number</label>
+                   <input value={config.bkashNumber} onChange={e => setConfig({...config, bkashNumber: e.target.value})} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl font-bold" placeholder="017XXXXXXXX" />
+                 </div>
+                 <button className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-black mt-4 shadow-xl active:scale-95">Save Store Profile</button>
                </div>
             </div>
           )}
         </div>
+
+        {/* Mobile Bottom Navigation */}
+        <nav className="md:hidden fixed bottom-0 left-0 right-0 h-20 glass-morphism px-4 flex items-center justify-between z-40 safe-bottom">
+          <NavItem view={AppView.DASHBOARD} icon="fa-house" label="Home" />
+          <NavItem view={AppView.LEADS} icon="fa-users" label="Leads" />
+          <NavItem view={AppView.PRICE_TRACKER} icon="fa-tags" label="Prices" />
+          <NavItem view={AppView.SETTINGS} icon="fa-gear" label="Setup" />
+        </nav>
       </main>
 
-      {/* Floating Messenger Preview Mockup */}
-      <div className="fixed bottom-10 right-10 z-40 lg:flex flex-col items-end gap-4 hidden pointer-events-none opacity-60 hover:opacity-100 transition-opacity">
-         <div className="bg-white p-4 rounded-2xl shadow-2xl border border-slate-100 w-64 pointer-events-auto">
-            <div className="flex items-center gap-2 mb-3 border-b border-slate-100 pb-2">
-               <div className="w-6 h-6 bg-indigo-600 rounded-full flex items-center justify-center"><i className="fa-brands fa-facebook-messenger text-[10px] text-white"></i></div>
-               <span className="text-[10px] font-black text-slate-400 uppercase">FB Integration</span>
-            </div>
-            <div className="space-y-2">
-               <div className="bg-slate-100 p-2 rounded-xl text-[10px] font-bold text-slate-600">আমাদের পেমেন্ট মেথডগুলো কি?</div>
-               <div className="bg-indigo-600 p-2 rounded-xl text-[10px] font-bold text-white text-right">আমরা বিকাশ, নগদ এবং ক্যাশ অন ডেলিভারি সাপোর্ট করি।</div>
-            </div>
-         </div>
-      </div>
-
       {showVoiceInterface && (
-        <VoiceInterface config={config} onClose={() => setShowVoiceInterface(false)} />
+        <VoiceInterface 
+          config={config} 
+          onClose={() => setShowVoiceInterface(false)} 
+          onLeadCaptured={handleLeadCaptured}
+        />
       )}
     </div>
   );

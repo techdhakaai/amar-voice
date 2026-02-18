@@ -37,18 +37,6 @@ export async function decodeAudioData(
   return buffer;
 }
 
-export function createBlob(data: Float32Array): { data: string; mimeType: string } {
-  const l = data.length;
-  const int16 = new Int16Array(l);
-  for (let i = 0; i < l; i++) {
-    int16[i] = data[i] * 32768;
-  }
-  return {
-    data: encode(new Uint8Array(int16.buffer)),
-    mimeType: 'audio/pcm;rate=16000',
-  };
-}
-
 /**
  * Plays a synthesized tone for UI feedback.
  * @param ctx AudioContext to play on
