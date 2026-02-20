@@ -19,6 +19,7 @@ const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ onClose, config, onLead
   const [isSendingImage, setIsSendingImage] = useState(false);
   const [isMuted, setIsMuted] = useState(false); 
   const [notification, setNotification] = useState<string | null>(null);
+  const [imageUploadMessage, setImageUploadMessage] = useState<string | null>(null); // New state for image upload success message
   const [currentInputTranscription, setCurrentInputTranscription] = useState('');
   const [currentOutputTranscription, setCurrentOutputTranscription] = useState('');
   const [speechRate, setSpeechRate] = useState<number>(1.0); 
@@ -29,6 +30,7 @@ const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ onClose, config, onLead
   const nextStartTimeRef = useRef<number>(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const notificationTimeoutRef = useRef<number | null>(null);
+  const imageUploadMessageTimeoutRef = useRef<number | null>(null); // New ref for image upload message timeout
   const isMutedRef = useRef(isMuted);
   const audioWorkletNodeRef = useRef<AudioWorkletNode | null>(null);
   const lastSentImageIdRef = useRef<string | null>(null); 
@@ -51,6 +53,18 @@ const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ onClose, config, onLead
     } else {
       notificationTimeoutRef.current = null; // Clear timeout if message is persistent
     }
+  }, []);
+
+  // New function to show image upload specific messages
+  const showImageUploadMessage = useCallback((message: string, duration: number = 3000) => {
+    setImageUploadMessage(message);
+    if (imageUploadMessageTimeoutRef.current) {
+      clearTimeout(imageUploadMessageTimeoutRef.current);
+    }
+    imageUploadMessageTimeoutRef.current = window.setTimeout(() => {
+      setImageUploadMessage(null);
+      imageUploadMessageTimeoutRef.current = null;
+    }, duration);
   }, []);
 
   const stopSession = useCallback(() => {
@@ -76,9 +90,14 @@ const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ onClose, config, onLead
     setImageHistory([]); 
     lastSentImageIdRef.current = null; 
     setNotification(null);
+    setImageUploadMessage(null); // Clear image upload message on session stop
     if (notificationTimeoutRef.current) {
       clearTimeout(notificationTimeoutRef.current);
       notificationTimeoutRef.current = null;
+    }
+    if (imageUploadMessageTimeoutRef.current) { // Clear image upload message timeout
+      clearTimeout(imageUploadMessageTimeoutRef.current);
+      imageUploadMessageTimeoutRef.current = null;
     }
   }, []);
 
@@ -108,7 +127,7 @@ const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ onClose, config, onLead
         });
         if (audioContextRef.current) playTone(audioContextRef.current.output, 880, 0.1);
         
-        showNotification("Image received! Analyzing...", 4000);
+        showImageUploadMessage("Image sent!"); // Display success message
       } catch (err) {
         console.error("Failed to send image:", err);
         showNotification("Failed to upload image. Please try again.", 3000, true);
@@ -142,6 +161,7 @@ const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ onClose, config, onLead
     if (isActive) return;
     setStatus('Initializing');
     setNotification(null);
+    setImageUploadMessage(null); // Clear image upload message on start
     setCurrentInputTranscription('');
     setCurrentOutputTranscription('');
     setImageHistory([]); 
@@ -169,7 +189,7 @@ const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ onClose, config, onLead
           outputAudioTranscription: {},
           speechConfig: {
             voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } },
-            speakingRate: speechRate, 
+            // Removed: speakingRate is not a valid property for SpeechConfig
           },
           tools: [{
             functionDeclarations: [{
@@ -241,6 +261,7 @@ const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ onClose, config, onLead
             }
 
             setNotification(null);
+            setImageUploadMessage(null); // Clear image upload message when AI starts responding
 
             if (msg.toolCall) {
               for (const fc of msg.toolCall.functionCalls) {
@@ -361,6 +382,9 @@ const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ onClose, config, onLead
       if (notificationTimeoutRef.current) {
         clearTimeout(notificationTimeoutRef.current);
       }
+      if (imageUploadMessageTimeoutRef.current) { // Clear image upload message timeout on unmount
+        clearTimeout(imageUploadMessageTimeoutRef.current);
+      }
     };
   }, [stopSession]);
 
@@ -475,7 +499,7 @@ const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ onClose, config, onLead
         {/* Interaction Controls */}
         <div className="p-8 pb-16 md:pb-10 bg-slate-800/50 flex flex-col gap-6 items-center border-t border-white/5">
           {isActive && (
-            <div className="flex gap-6 mb-2">
+            <div className="flex gap-6 mb-2 relative"> {/* Added relative for positioning image upload message */}
               <input type="file" ref={fileInputRef} onChange={handleImageUpload} className="hidden" accept="image/*" />
               <button 
                 onClick={() => fileInputRef.current?.click()}
@@ -485,6 +509,11 @@ const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ onClose, config, onLead
               >
                 {isSendingImage ? <i className="fa-solid fa-spinner fa-spin"></i> : <i className="fa-solid fa-camera"></i>}
               </button>
+              {imageUploadMessage && ( // Display image upload message next to camera button
+                <div className="absolute left-full top-1/2 -translate-y-1/2 ml-4 px-3 py-1 bg-green-500 text-white text-xs font-semibold rounded-full whitespace-nowrap animate-in fade-in slide-in-from-left-2">
+                  {imageUploadMessage}
+                </div>
+              )}
 
               <button 
                 onClick={toggleMute}

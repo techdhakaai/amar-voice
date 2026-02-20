@@ -5,7 +5,8 @@ import VoiceInterface from './components/VoiceInterface';
 import { GoogleGenAI } from '@google/genai';
 
 // Firebase Imports
-import { initializeApp } from 'firebase/app';
+// @google/genai-fix: Changed Firebase `initializeApp` import to use a namespace import for broader compatibility.
+import * as firebaseApp from 'firebase/app'; 
 import { getFirestore, collection, addDoc, getDocs, query, orderBy, Timestamp } from 'firebase/firestore';
 
 // --- Firebase Configuration (REPLACE WITH YOUR ACTUAL CONFIG) ---
@@ -20,7 +21,7 @@ const firebaseConfig = {
 };
 
 // Initialize Firebase once
-const app = initializeApp(firebaseConfig);
+const app = firebaseApp.initializeApp(firebaseConfig);
 const db = getFirestore(app);
 // ----------------------------------------------------------------
 
