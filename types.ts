@@ -24,6 +24,7 @@ export interface Lead {
   phone: string;
   location: string;
   interest: string;
+  sentiment?: 'Happy' | 'Frustrated' | 'Inquisitive' | 'Neutral';
   timestamp: Date;
 }
 
@@ -48,6 +49,7 @@ export interface BusinessConfig {
   returnPolicy: string;
   bkashNumber: string;
   personaTone: 'formal' | 'friendly' | 'enthusiastic';
+  voiceName: 'Puck' | 'Charon' | 'Kore' | 'Fenrir' | 'Zephyr';
   subscriptionStatus: 'active' | 'trial' | 'expired';
   monthlyLimit: number;
   usageCount: number;

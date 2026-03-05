@@ -7,7 +7,7 @@ import { GoogleGenAI } from '@google/genai';
 // Firebase Imports
 // @google/genai-fix: Changed Firebase `initializeApp` import to use a namespace import for broader compatibility.
 import * as firebaseApp from 'firebase/app'; 
-import { getFirestore, collection, addDoc, getDocs, query, orderBy, Timestamp } from 'firebase/firestore';
+import { getFirestore, collection, addDoc, getDocs, query, orderBy, Timestamp, updateDoc, doc } from 'firebase/firestore';
 
 // --- Firebase Configuration (REPLACE WITH YOUR ACTUAL CONFIG) ---
 // You will get this from your Firebase project settings
@@ -44,6 +44,7 @@ const App: React.FC = () => {
       returnPolicy: '7-day return policy.',
       bkashNumber: '01XXXXXXXXX',
       personaTone: 'friendly',
+      voiceName: 'Zephyr',
       subscriptionStatus: 'trial',
       monthlyLimit: 100,
       usageCount: 0
@@ -69,6 +70,7 @@ const App: React.FC = () => {
             phone: data.phone,
             location: data.location || 'N/A',
             interest: data.interest || 'N/A',
+            sentiment: data.sentiment,
             timestamp: data.timestamp.toDate() // Convert Firebase Timestamp to Date
           };
         });
@@ -98,10 +100,25 @@ const App: React.FC = () => {
       });
       // Update local state with the Firestore-assigned ID
       setLeads(prev => [{ ...newLead, id: docRef.id }, ...prev]);
+      return docRef.id;
     } catch (error) {
       console.error("Error saving lead to Firestore:", error);
-      // Fallback: If Firestore fails, still update local state
-      setLeads(prev => [{ ...newLead, id: Math.random().toString(36).substring(2, 9) }, ...prev]);
+      const fallbackId = Math.random().toString(36).substring(2, 9);
+      setLeads(prev => [{ ...newLead, id: fallbackId }, ...prev]);
+      return fallbackId;
+    }
+  };
+
+  const handleSentimentUpdate = async (leadId: string, sentiment: 'Happy' | 'Frustrated' | 'Inquisitive' | 'Neutral') => {
+    try {
+      // Update local state
+      setLeads(prev => prev.map(l => l.id === leadId ? { ...l, sentiment } : l));
+      
+      // Update Firestore
+      const leadRef = doc(db, "leads", leadId);
+      await updateDoc(leadRef, { sentiment });
+    } catch (error) {
+      console.error("Error updating sentiment in Firestore:", error);
     }
   };
 
@@ -210,7 +227,19 @@ const App: React.FC = () => {
                   {leads.map(lead => (
                     <div key={lead.id} className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm hover:ring-2 hover:ring-indigo-100 transition-all flex justify-between items-start">
                       <div className="space-y-1">
-                        <h4 className="font-black text-slate-800">{lead.name || 'Anonymous User'}</h4>
+                        <div className="flex items-center gap-2">
+                          <h4 className="font-black text-slate-800">{lead.name || 'Anonymous User'}</h4>
+                          {lead.sentiment && (
+                            <span className={`text-[8px] font-black px-2 py-0.5 rounded-full uppercase tracking-tighter ${
+                              lead.sentiment === 'Happy' ? 'bg-green-100 text-green-600' :
+                              lead.sentiment === 'Frustrated' ? 'bg-red-100 text-red-600' :
+                              lead.sentiment === 'Inquisitive' ? 'bg-blue-100 text-blue-600' :
+                              'bg-slate-100 text-slate-500'
+                            }`}>
+                              {lead.sentiment}
+                            </span>
+                          )}
+                        </div>
                         <p className="text-indigo-600 font-bold text-sm">{lead.phone}</p>
                         <p className="text-xs text-slate-500 line-clamp-1 italic">Int: {lead.interest}</p>
                         <p className="text-xs text-slate-400">Loc: {lead.location}</p>
@@ -288,6 +317,36 @@ const App: React.FC = () => {
                    <label className="text-[10px] font-black text-slate-400 uppercase">bKash Number</label>
                    <input value={config.bkashNumber} onChange={e => setConfig({...config, bkashNumber: e.target.value})} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl font-bold" placeholder="017XXXXXXXX" />
                  </div>
+                 
+                 <div className="grid grid-cols-2 gap-4">
+                   <div className="space-y-2">
+                     <label className="text-[10px] font-black text-slate-400 uppercase">AI Persona</label>
+                     <select 
+                       value={config.personaTone} 
+                       onChange={e => setConfig({...config, personaTone: e.target.value as any})}
+                       className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl font-bold outline-none"
+                     >
+                       <option value="formal">Professional Manager</option>
+                       <option value="friendly">Friendly Assistant</option>
+                       <option value="enthusiastic">Enthusiastic Owner</option>
+                     </select>
+                   </div>
+                   <div className="space-y-2">
+                     <label className="text-[10px] font-black text-slate-400 uppercase">AI Voice</label>
+                     <select 
+                       value={config.voiceName} 
+                       onChange={e => setConfig({...config, voiceName: e.target.value as any})}
+                       className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl font-bold outline-none"
+                     >
+                       <option value="Zephyr">Zephyr (Female)</option>
+                       <option value="Kore">Kore (Female)</option>
+                       <option value="Puck">Puck (Male)</option>
+                       <option value="Charon">Charon (Male)</option>
+                       <option value="Fenrir">Fenrir (Male)</option>
+                     </select>
+                   </div>
+                 </div>
+
                  <button className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-black mt-4 shadow-xl active:scale-95">Save Store Profile</button>
                </div>
             </div>
@@ -308,6 +367,7 @@ const App: React.FC = () => {
           config={config} 
           onClose={() => setShowVoiceInterface(false)} 
           onLeadCaptured={handleLeadCaptured}
+          onSentimentUpdate={handleSentimentUpdate}
         />
       )}
     </div>

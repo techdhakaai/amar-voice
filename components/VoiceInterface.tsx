@@ -8,12 +8,13 @@ import { BusinessConfig, Lead, ImageInteraction } from '../types'; // Import Ima
 interface VoiceInterfaceProps {
   onClose: () => void;
   config: BusinessConfig;
-  onLeadCaptured?: (lead: Lead) => void;
+  onLeadCaptured?: (lead: Lead) => Promise<string | undefined>;
+  onSentimentUpdate?: (leadId: string, sentiment: 'Happy' | 'Frustrated' | 'Inquisitive' | 'Neutral') => void;
 }
 
 type ConnectionStatus = 'Idle' | 'Initializing' | 'Connecting' | 'Listening' | 'Processing' | 'Speaking' | 'Error';
 
-const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ onClose, config, onLeadCaptured }) => {
+const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ onClose, config, onLeadCaptured, onSentimentUpdate }) => {
   const [isActive, setIsActive] = useState(false);
   const [status, setStatus] = useState<ConnectionStatus>('Idle');
   const [isSendingImage, setIsSendingImage] = useState(false);
@@ -22,7 +23,11 @@ const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ onClose, config, onLead
   const [imageUploadMessage, setImageUploadMessage] = useState<string | null>(null); // New state for image upload success message
   const [currentInputTranscription, setCurrentInputTranscription] = useState('');
   const [currentOutputTranscription, setCurrentOutputTranscription] = useState('');
+  const [selectedAccent, setSelectedAccent] = useState<string>('Dhaka');
   const [speechRate, setSpeechRate] = useState<number>(1.0); 
+  const [textInput, setTextInput] = useState('');
+  const [isTextMode, setIsTextMode] = useState(false);
+  const [capturedLeadId, setCapturedLeadId] = useState<string | null>(null);
   const [imageHistory, setImageHistory] = useState<ImageInteraction[]>([]); 
   
   const audioContextRef = useRef<{ input: AudioContext; output: AudioContext; } | null>(null);
@@ -34,6 +39,7 @@ const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ onClose, config, onLead
   const isMutedRef = useRef(isMuted);
   const audioWorkletNodeRef = useRef<AudioWorkletNode | null>(null);
   const lastSentImageIdRef = useRef<string | null>(null); 
+  const transcriptRef = useRef<string>('');
 
   useEffect(() => {
     isMutedRef.current = isMuted;
@@ -67,7 +73,10 @@ const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ onClose, config, onLead
     }, duration);
   }, []);
 
-  const stopSession = useCallback(() => {
+  const stopSession = useCallback(async () => {
+    const currentLeadId = capturedLeadId;
+    const currentTranscript = transcriptRef.current;
+
     sessionPromiseRef.current?.then(s => s.close?.()).catch(() => {});
     sessionPromiseRef.current = null;
     
@@ -89,6 +98,8 @@ const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ onClose, config, onLead
     setCurrentOutputTranscription('');
     setImageHistory([]); 
     lastSentImageIdRef.current = null; 
+    setCapturedLeadId(null);
+    transcriptRef.current = '';
     setNotification(null);
     setImageUploadMessage(null); // Clear image upload message on session stop
     if (notificationTimeoutRef.current) {
@@ -99,7 +110,29 @@ const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ onClose, config, onLead
       clearTimeout(imageUploadMessageTimeoutRef.current);
       imageUploadMessageTimeoutRef.current = null;
     }
-  }, []);
+
+    // Perform sentiment analysis after call ends if a lead was captured
+    if (currentLeadId && currentTranscript.length > 50) {
+      try {
+        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+        const response = await ai.models.generateContent({
+          model: 'gemini-3-flash-preview',
+          contents: `Analyze the following customer service transcript and determine the customer's mood. 
+          Respond with ONLY one word: Happy, Frustrated, Inquisitive, or Neutral.
+          
+          Transcript:
+          ${currentTranscript}`,
+        });
+        
+        const sentiment = response.text?.trim() as any;
+        if (['Happy', 'Frustrated', 'Inquisitive', 'Neutral'].includes(sentiment)) {
+          onSentimentUpdate?.(currentLeadId, sentiment);
+        }
+      } catch (e) {
+        console.error("Sentiment analysis failed:", e);
+      }
+    }
+  }, [capturedLeadId, onSentimentUpdate]);
 
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -157,18 +190,26 @@ const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ onClose, config, onLead
     });
   }, [showNotification]);
 
-  const startSession = async () => {
+  const startSession = async (useTextOnly = false) => {
     if (isActive) return;
     setStatus('Initializing');
     setNotification(null);
-    setImageUploadMessage(null); // Clear image upload message on start
+    setImageUploadMessage(null); 
     setCurrentInputTranscription('');
     setCurrentOutputTranscription('');
     setImageHistory([]); 
     lastSentImageIdRef.current = null;
+    setIsTextMode(useTextOnly);
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      let stream: MediaStream | null = null;
+      if (!useTextOnly) {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          throw new Error('MediaDevicesNotSupported');
+        }
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      }
+
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const inputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
       const outputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
@@ -184,12 +225,11 @@ const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ onClose, config, onLead
         model: GEMINI_MODEL,
         config: {
           responseModalities: [Modality.AUDIO],
-          systemInstruction: getAccentAdjustedInstruction('Dhaka', config),
+          systemInstruction: getAccentAdjustedInstruction(selectedAccent, config),
           inputAudioTranscription: {},
           outputAudioTranscription: {},
           speechConfig: {
-            voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } },
-            // Removed: speakingRate is not a valid property for SpeechConfig
+            voiceConfig: { prebuiltVoiceConfig: { voiceName: config.voiceName || 'Zephyr' } },
           },
           tools: [{
             functionDeclarations: [{
@@ -211,19 +251,21 @@ const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ onClose, config, onLead
         callbacks: {
           onopen: () => {
             setIsActive(true);
-            setStatus('Listening');
-            setIsMuted(false);
+            setStatus(useTextOnly ? 'Idle' : 'Listening');
+            setIsMuted(useTextOnly);
 
-            const source = inputCtx.createMediaStreamSource(stream);
-            source.connect(audioWorkletNode);
-            audioWorkletNode.connect(inputCtx.destination); 
+            if (stream) {
+              const source = inputCtx.createMediaStreamSource(stream);
+              source.connect(audioWorkletNode);
+              audioWorkletNode.connect(inputCtx.destination); 
 
-            audioWorkletNode.port.onmessage = (event) => {
-              const pcmBlob = event.data;
-              if (!isMutedRef.current) { 
-                sessionPromise.then(s => s.sendRealtimeInput({ media: pcmBlob }));
-              }
-            };
+              audioWorkletNode.port.onmessage = (event) => {
+                const pcmBlob = event.data;
+                if (!isMutedRef.current) { 
+                  sessionPromise.then(s => s.sendRealtimeInput({ media: pcmBlob }));
+                }
+              };
+            }
           },
           onmessage: async (msg: any) => {
             if (msg.serverContent?.error) {
@@ -232,11 +274,15 @@ const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ onClose, config, onLead
             }
 
             if (msg.serverContent?.inputTranscription) {
-              setCurrentInputTranscription(prev => prev + msg.serverContent.inputTranscription.text);
+              const text = msg.serverContent.inputTranscription.text;
+              setCurrentInputTranscription(prev => prev + text);
+              transcriptRef.current += `\nCustomer: ${text}`;
               lastSentImageIdRef.current = null;
             }
             if (msg.serverContent?.outputTranscription) {
-              setCurrentOutputTranscription(prev => prev + msg.serverContent.outputTranscription.text);
+              const text = msg.serverContent.outputTranscription.text;
+              setCurrentOutputTranscription(prev => prev + text);
+              transcriptRef.current += `\nAI: ${text}`;
 
               if (lastSentImageIdRef.current) {
                 setImageHistory(prev => {
@@ -271,7 +317,9 @@ const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ onClose, config, onLead
                     ...fc.args,
                     timestamp: new Date()
                   };
-                  onLeadCaptured?.(newLead);
+                  onLeadCaptured?.(newLead).then(id => {
+                    if (id) setCapturedLeadId(id);
+                  });
                   showNotification(`Lead saved for ${newLead.name || newLead.phone}! Our manager will contact them shortly.`, 5000);
 
                   sessionPromise.then(s => s.sendToolResponse({
@@ -363,16 +411,38 @@ const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ onClose, config, onLead
     } catch (e: any) {
       console.error("Connection failed:", e);
       setStatus('Error');
-      if (e.name === 'NotAllowedError') {
+      if (e.name === 'NotAllowedError' || e.message === 'Permission denied') {
         showNotification("Microphone permission denied. Please enable it in your browser settings.", 0, true);
-      } else if (e.name === 'NotFoundError') {
-        showNotification("No microphone found. Please connect a microphone.", 0, true);
+      } else if (e.name === 'NotFoundError' || e.name === 'DevicesNotFoundError' || e.message?.includes('device not found')) {
+        showNotification("No microphone found. Please connect a microphone and try again.", 0, true);
+      } else if (e.name === 'NotReadableError' || e.name === 'TrackStartError') {
+        showNotification("Microphone is already in use by another application.", 0, true);
       } else if (e.name === 'AbortError') {
-        showNotification("Microphone access was aborted by the user. Please try again.", 0, true);
+        showNotification("Microphone access was aborted. Please try again.", 0, true);
+      } else if (e.message === 'MediaDevicesNotSupported') {
+        showNotification("Microphone access is not supported in this browser or context.", 0, true);
+      } else {
+        showNotification(`Failed to start session: ${e.message || 'Unknown error'}. Please check your connection.`, 0, true);
       }
-      else {
-        showNotification("Failed to start session. Please check your internet connection or try again.", 0, true);
-      }
+    }
+  };
+
+  const handleSendMessage = async () => {
+    if (!textInput.trim() || !sessionPromiseRef.current) return;
+    
+    const message = textInput.trim();
+    setTextInput('');
+    setCurrentInputTranscription(message);
+    transcriptRef.current += `\nCustomer (Text): ${message}`;
+    
+    try {
+      const session = await sessionPromiseRef.current;
+      // Use session.send to send text parts to the Live session
+      session.send({ parts: [{ text: message }] });
+      setStatus('Processing');
+    } catch (err) {
+      console.error("Failed to send text:", err);
+      showNotification("Failed to send message. Please try again.", 3000, true);
     }
   };
 
@@ -405,8 +475,27 @@ const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ onClose, config, onLead
         </div>
 
         {/* Visualizer Area */}
-        <div className="flex-1 flex flex-col items-center justify-center p-10 gap-8">
-          <div className={`relative w-48 h-48 rounded-full flex items-center justify-center transition-all duration-700 ${status === 'Speaking' ? 'bg-orange-500 scale-105 pulse-effect shadow-[0_0_60px_-15px_rgba(249,115,22,0.6)]' : status === 'Listening' ? 'bg-indigo-600 shadow-[0_0_60px_-15px_rgba(79,70,229,0.4)]' : 'bg-slate-800'}`}>
+        <div className="flex-1 flex flex-col items-center justify-center p-6 md:p-10 gap-6">
+          
+          {/* Accent Selection UI */}
+          {!isActive && (
+            <div className="w-full max-w-xs flex flex-col gap-3 mb-4">
+              <p className="text-white/60 text-[10px] font-black uppercase tracking-widest text-center">Select AI Accent</p>
+              <div className="grid grid-cols-3 gap-2">
+                {['Dhaka', 'Chittagong', 'Sylhet'].map((accent) => (
+                  <button
+                    key={accent}
+                    onClick={() => setSelectedAccent(accent)}
+                    className={`py-2 px-1 rounded-xl text-[10px] font-bold transition-all border ${selectedAccent === accent ? 'bg-indigo-600 border-indigo-500 text-white shadow-lg shadow-indigo-500/20' : 'bg-slate-800 border-white/5 text-slate-400 hover:bg-slate-700'}`}
+                  >
+                    {accent}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className={`relative w-40 h-40 md:w-48 md:h-48 rounded-full flex items-center justify-center transition-all duration-700 ${status === 'Speaking' ? 'bg-orange-500 scale-105 pulse-effect shadow-[0_0_60px_-15px_rgba(249,115,22,0.6)]' : status === 'Listening' ? 'bg-indigo-600 shadow-[0_0_60px_-15px_rgba(79,70,229,0.4)]' : 'bg-slate-800'}`}>
             <i className={`fa-solid ${status === 'Speaking' ? 'fa-volume-high' : 'fa-microphone'} text-5xl text-white`}></i>
             
             {/* Waveform rings (decorative) */}
@@ -418,14 +507,32 @@ const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ onClose, config, onLead
             )}
           </div>
 
-          <div className="text-center max-w-[240px] relative min-h-[48px] flex items-center justify-center">
+          <div className="text-center max-w-[240px] relative min-h-[48px] flex flex-col items-center justify-center gap-2">
             {notification ? (
-              <p className={`text-sm font-black transition-all duration-300 ${status === 'Error' ? 'text-red-400' : 'text-indigo-400'}`}>
-                {notification}
-              </p>
+              <div className="flex flex-col items-center gap-2">
+                <p className={`text-sm font-black transition-all duration-300 ${status === 'Error' ? 'text-red-400' : 'text-indigo-400'}`}>
+                  {notification}
+                </p>
+                {status === 'Error' && (
+                  <div className="flex gap-2">
+                    <button 
+                      onClick={() => startSession(false)}
+                      className="text-[10px] bg-indigo-600 text-white px-3 py-1 rounded-full font-bold hover:bg-indigo-700 transition-all"
+                    >
+                      Retry Mic
+                    </button>
+                    <button 
+                      onClick={() => startSession(true)}
+                      className="text-[10px] bg-slate-700 text-white px-3 py-1 rounded-full font-bold hover:bg-slate-600 transition-all"
+                    >
+                      Use Text Mode
+                    </button>
+                  </div>
+                )}
+              </div>
             ) : (
               <p className="text-slate-400 text-sm font-medium leading-relaxed">
-                {status === 'Idle' ? 'Tap below to start your real-time voice assistance.' : status === 'Listening' ? (isMuted ? 'Microphone is muted. Tap the mic icon to unmute.' : 'The AI is listening... Speak your query in Bengali.') : status === 'Speaking' ? 'The AI is providing details. Listen carefully.' : 'Connecting to Amar Voice infrastructure...'}
+                {status === 'Idle' ? 'Tap below to start your real-time voice assistance.' : status === 'Listening' ? (isMuted ? 'Microphone is muted. Tap the mic icon to unmute.' : 'The AI is listening... Speak your query in Bengali.') : status === 'Speaking' ? 'The AI is providing details. Listen carefully.' : status === 'Processing' ? 'AI is thinking...' : 'Connecting to Amar Voice infrastructure...'}
               </p>
             )}
           </div>
@@ -498,6 +605,27 @@ const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ onClose, config, onLead
 
         {/* Interaction Controls */}
         <div className="p-8 pb-16 md:pb-10 bg-slate-800/50 flex flex-col gap-6 items-center border-t border-white/5">
+          
+          {isActive && (
+            <div className="w-full max-w-sm flex gap-2 mb-2">
+              <input
+                type="text"
+                value={textInput}
+                onChange={(e) => setTextInput(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
+                placeholder="Type a message in Bengali..."
+                className="flex-1 bg-slate-900 border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-indigo-500 transition-all"
+              />
+              <button
+                onClick={handleSendMessage}
+                disabled={!textInput.trim()}
+                className="w-12 h-12 bg-indigo-600 text-white rounded-xl flex items-center justify-center disabled:opacity-50 disabled:bg-slate-700 transition-all"
+              >
+                <i className="fa-solid fa-paper-plane"></i>
+              </button>
+            </div>
+          )}
+
           {isActive && (
             <div className="flex gap-6 mb-2 relative"> {/* Added relative for positioning image upload message */}
               <input type="file" ref={fileInputRef} onChange={handleImageUpload} className="hidden" accept="image/*" />
